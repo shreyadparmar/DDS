@@ -1,0 +1,278 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+/*
+  E-Library Book Management — C++17 single-file console app
+  Features:
+    - Add, list, search (by ID or title substring)
+    - Issue / Return (tracks available copies)
+    - Edit and Delete book
+    - Persistent storage to CSV (library.csv)
+    - Input validation + friendly menu
+
+  Build (g++ 10+):
+    g++ -std=gnu++17 -O2 -o ELibrary ELibrary.cpp
+
+  File format (CSV): id,title,author,totalCopies,availableCopies
+*/
+
+struct Book {
+    int id{};
+    string title;
+    string author;
+    int totalCopies{};
+    int availableCopies{};
+};
+
+static const string DB_FILE = "library.csv";
+
+// --- CSV helpers (very simple; escapes commas by replacing with \x1F for storage) ---
+namespace csv {
+    static const char SEP = ',';
+    static const char SUB = 0x1F; // unit separator
+
+    string escape(const string &s){
+        string r = s;
+        for(char &c : r) if(c == ',') c = SUB;
+        return r;
+    }
+    string unescape(const string &s){
+        string r = s;
+        for(char &c : r) if(c == SUB) c = ',';
+        return r;
+    }
+
+    vector<string> split(const string &line){
+        vector<string> out; string cur; bool inQuote=false; // not using quotes; kept for future
+        for(char c: line){
+            if(c==SEP){ out.push_back(cur); cur.clear(); }
+            else cur.push_back(c);
+        }
+        out.push_back(cur);
+        return out;
+    }
+}
+
+class Library {
+    unordered_map<int, Book> books; // keyed by id
+
+public:
+    // ---- Persistence ----
+    void load(){
+        books.clear();
+        ifstream in(DB_FILE);
+        if(!in) return; // nothing yet
+        string line; int lineNo=0;
+        while(getline(in,line)){
+            ++lineNo; if(line.empty()) continue;
+            auto cols = csv::split(line);
+            if(cols.size() != 5) { cerr << "[WARN] Bad CSV at line " << lineNo << "\n"; continue; }
+            try{
+                Book b;
+                b.id = stoi(cols[0]);
+                b.title = csv::unescape(cols[1]);
+                b.author = csv::unescape(cols[2]);
+                b.totalCopies = stoi(cols[3]);
+                b.availableCopies = stoi(cols[4]);
+                if(b.availableCopies > b.totalCopies) b.availableCopies = b.totalCopies;
+                books[b.id] = b;
+            }catch(...){ cerr << "[WARN] Parse error at line " << lineNo << "\n"; }
+        }
+    }
+
+    void save() const{
+        ofstream out(DB_FILE, ios::trunc);
+        if(!out){ cerr << "[ERROR] Could not write to " << DB_FILE << "\n"; return; }
+        for(const auto &kv : books){
+            const Book &b = kv.second;
+            out << b.id << ','
+                << csv::escape(b.title) << ','
+                << csv::escape(b.author) << ','
+                << b.totalCopies << ','
+                << b.availableCopies << "\n";
+        }
+    }
+
+    // ---- CRUD ----
+    bool addBook(const Book &b){
+        if(books.count(b.id)) return false; // duplicate id
+        books[b.id] = b; return true;
+    }
+
+    bool editBook(int id, const string &newTitle, const string &newAuthor, int newTotal){
+        auto it = books.find(id); if(it == books.end()) return false;
+        Book &b = it->second;
+        b.title = newTitle; b.author = newAuthor;
+        if(newTotal < 0) newTotal = 0;
+        int issued = b.totalCopies - b.availableCopies;
+        b.totalCopies = newTotal;
+        b.availableCopies = max(0, b.totalCopies - issued);
+        return true;
+    }
+
+    bool removeBook(int id){
+        return books.erase(id) > 0;
+    }
+
+    // ---- Transactions ----
+    bool issue(int id){
+        auto it = books.find(id); if(it == books.end()) return false;
+        Book &b = it->second; if(b.availableCopies <= 0) return false;
+        b.availableCopies--; return true;
+    }
+
+    bool giveBack(int id){
+        auto it = books.find(id); if(it == books.end()) return false;
+        Book &b = it->second; if(b.availableCopies >= b.totalCopies) return false;
+        b.availableCopies++; return true;
+    }
+
+    // ---- Queries ----
+    optional<Book> get(int id) const{
+        auto it = books.find(id); if(it==books.end()) return nullopt; return it->second;
+    }
+
+    vector<Book> searchByTitle(const string &needle) const{
+        vector<Book> res; string q = needle; 
+        // lowercase both for case-insensitive search
+        auto lower = [](string s){ for(char &c:s) c = (char)tolower((unsigned char)c); return s; };
+        string Lq = lower(q);
+        for(const auto &kv : books){
+            string Lt = lower(kv.second.title);
+            if(Lt.find(Lq) != string::npos) res.push_back(kv.second);
+        }
+        sort(res.begin(), res.end(), [](const Book &a, const Book &b){ return a.id < b.id; });
+        return res;
+    }
+
+    vector<Book> listAll() const{
+        vector<Book> v; v.reserve(books.size());
+        for(const auto &kv : books) v.push_back(kv.second);
+        sort(v.begin(), v.end(), [](const Book &a, const Book &b){ return a.id < b.id; });
+        return v;
+    }
+};
+
+// ---- UI Helpers ----
+namespace ui {
+    int readInt(const string &prompt){
+        while(true){
+            cout << prompt; string s; if(!getline(cin,s)) return 0; 
+            stringstream ss(s); int x; if(ss>>x) return x; 
+            cout << "Invalid number. Try again.\n";
+        }
+    }
+
+    string readLine(const string &prompt, bool allowEmpty = false){
+        while(true){
+            cout << prompt; string s; if(!getline(cin,s)) return ""; 
+            if(allowEmpty || !s.empty()) return s; 
+            cout << "Input cannot be empty. Try again.\n";
+        }
+    }
+
+    void printBook(const Book &b){
+        cout << "ID: " << b.id
+             << " | Title: " << b.title
+             << " | Author: " << b.author
+             << " | Total: " << b.totalCopies
+             << " | Available: " << b.availableCopies << '\n';
+    }
+
+    void header(const string &title){
+        cout << "\n==== " << title << " ====\n";
+    }
+}
+
+int main(){
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    Library lib; 
+    lib.load();
+
+    while(true){
+        ui::header("E-Library Book Management");
+        cout << "1) Add Book\n"
+             << "2) List All Books\n"
+             << "3) Search by ID\n"
+             << "4) Search by Title\n"
+             << "5) Issue Book\n"
+             << "6) Return Book\n"
+             << "7) Edit Book\n"
+             << "8) Delete Book\n"
+             << "9) Save\n"
+             << "0) Exit\n";
+        int choice = ui::readInt("Choose: ");
+
+        if(choice == 1){
+            ui::header("Add Book");
+            int id = ui::readInt("ID (integer): ");
+            string title = ui::readLine("Title: ");
+            string author = ui::readLine("Author: ");
+            int total = ui::readInt("Total copies: ");
+            if(total < 0) total = 0;
+            Book b{ id, title, author, total, total };
+            if(lib.addBook(b)) { cout << "Added.\n"; }
+            else { cout << "A book with that ID already exists.\n"; }
+        }
+        else if(choice == 2){
+            ui::header("All Books");
+            auto all = lib.listAll();
+            if(all.empty()) cout << "(empty)\n";
+            for(const auto &b : all) ui::printBook(b);
+        }
+        else if(choice == 3){
+            int id = ui::readInt("Enter ID: ");
+            auto ob = lib.get(id);
+            if(ob) ui::printBook(*ob); else cout << "Not found.\n";
+        }
+        else if(choice == 4){
+            string q = ui::readLine("Title contains: ");
+            auto v = lib.searchByTitle(q);
+            if(v.empty()) cout << "No matches.\n";
+            for(const auto &b : v) ui::printBook(b);
+        }
+        else if(choice == 5){
+            int id = ui::readInt("Book ID to issue: ");
+            if(lib.issue(id)) cout << "Issued successfully.\n"; else cout << "Cannot issue (ID not found or no copies).\n";
+        }
+        else if(choice == 6){
+            int id = ui::readInt("Book ID to return: ");
+            if(lib.giveBack(id)) cout << "Returned successfully.\n"; else cout << "Cannot return (ID not found or already full).\n";
+        }
+        else if(choice == 7){
+            int id = ui::readInt("ID to edit: ");
+            auto ob = lib.get(id);
+            if(!ob){ cout << "Not found.\n"; continue; }
+            cout << "Leave fields empty to keep current.\n";
+            string t = ui::readLine("New title (currently '" + ob->title + "'): ", true);
+            string a = ui::readLine("New author (currently '" + ob->author + "'): ", true);
+            string tmp;
+            cout << "New total copies (currently " << ob->totalCopies << ") : ";
+            getline(cin, tmp);
+            int newTotal = ob->totalCopies;
+            if(!tmp.empty()){
+                stringstream ss(tmp); int x; if(ss>>x) newTotal = max(0,x); else cout << "Keeping previous total.\n";
+            }
+            string newTitle = t.empty() ? ob->title : t;
+            string newAuthor = a.empty() ? ob->author : a;
+            if(lib.editBook(id, newTitle, newAuthor, newTotal)) cout << "Updated.\n"; else cout << "Update failed.\n";
+        }
+        else if(choice == 8){
+            int id = ui::readInt("ID to delete: ");
+            if(lib.removeBook(id)) cout << "Deleted.\n"; else cout << "Not found.\n";
+        }
+        else if(choice == 9){
+            lib.save(); cout << "Saved to '" << DB_FILE << "'.\n";
+        }
+        else if(choice == 0){
+            lib.save(); cout << "Goodbye!\n"; break;
+        }
+        else {
+            cout << "Invalid option. Try again.\n";
+        }
+    }
+    return 0;
+}
+
