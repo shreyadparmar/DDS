@@ -23,7 +23,7 @@ Filtering → Conditional filtering with list comprehension
 
 🚀 How to Run
 # Clone repository
-git clone https://github.com/your-username/personal-finance-tracker.git
+git clone https://github.com/shreyadparmar/personal-finance-tracker.git
 cd personal-finance-tracker/src
 
 # Run the program
